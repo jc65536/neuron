@@ -5,7 +5,7 @@ from neuronxcc import nki
 import neuronxcc.nki.language as nl
 
 
-@nki.jit
+@nki.jit(mode="simulation")
 def nki_tensor_add_kernel(a_input, b_input):
     """NKI kernel to compute element-wise addition of two input tensors
     """
@@ -40,10 +40,6 @@ if __name__ == "__main__":
     a = np.ones((4, 3), dtype=np.float16)
     b = np.ones((4, 3), dtype=np.float16)
 
-    # Run NKI kernel on a NeuronDevice
-    # c = nki_tensor_add_kernel(a, b)
-
-    # Simulate kernel
-    c = nki.simulate_kernel(nki_tensor_add_kernel, a, b)
+    c = nki_tensor_add_kernel(a, b)
 
     print(c)
