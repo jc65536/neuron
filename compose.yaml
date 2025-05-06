@@ -1,0 +1,9 @@
+services:
+  neuron:
+    image: neuron
+    tty: true
+    stdin_open: true
+    command: bash
+    volumes:
+      - ./workspace:/neuron/workspace
+    user: 1000:1000

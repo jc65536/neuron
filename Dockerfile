@@ -24,4 +24,9 @@ RUN . venv/bin/activate \
     && pip config set global.extra-index-url https://pip.repos.neuron.amazonaws.com \
     && pip install awscli neuronx-cc==2.* numpy
 
+RUN groupadd --gid 1000 user \
+    && useradd --uid 1000 --gid 1000 -m -s /bin/bash user
+
+USER user
+
 ENTRYPOINT [ "./entrypoint" ]
