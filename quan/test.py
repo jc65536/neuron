@@ -3,26 +3,58 @@ from neuronxcc import nki
 import neuronxcc.nki.language as nl
 import neuronxcc.nki.isa as nisa
 
+DTYPE = np.float16
+
 # Generate the permutation info required by the kernel
-def get_perm(n, gate_idcs):
-    perm = list(range(n))
-    locs = list(range(n))
-    for i, idx in enumerate(gate_idcs):
-        # if perm[i] != idx:
-        #     print(f'{i=} {idx=}')
-        #     perm[i], perm[idx] = perm[idx], perm[i]
-        if perm[i] != idx:
-            # Swap idx elem in perm to i in perm
-            loc_idx = locs[idx]
-            perm[i], perm[loc_idx] = perm[loc_idx], perm[i]
-            locs[perm[i]] = i
-            locs[perm[loc_idx]] = loc_idx
+def get_perm(n: int, affected_qubits: list[int]):
+    """
+    Parameters
+    ==========
+    n: int
+        Total number of qubits
+
+    affected_qubits: list[int]
+        The qubits that the gate is acting on. The order is least significant
+        qubit first. For example, if the gate is Z tensor X, then X would
+        operate on qubit affected_qubits[0], and Z would operate on qubit
+        affected_qubits[1]. In other words, qubit affected_qubits[i] will be
+        permuted to qubit i, and gate I^{n - 2} tensor Z tensor X will be
+        applied. Must be unique.
+
+        |0101>
+         ^  ^ qubit 0
+         qubit 3
+    
+    Returns
+    =======
+    An array A = [[0, x], [1, y], [3, z] ...] where each pair [a, b] indicates
+    swapping qubit a with b
+    As well as the masks 1 << A
+    """
+
+    old_to_perm = list(range(n))  # qubit i in the old statevector becomes qubit old_to_perm[i] in the permuted statevector
+    perm_to_old = list(range(n))  # inverse of old_to_perm
+    for perm_idx, old_idx in enumerate(affected_qubits):
+        if perm_to_old[perm_idx] != old_idx:
+            # We want to update the maps such that old_to_perm[old_idx] =
+            # perm_idx and perm_to_old[perm_idx] = old_idx WITHOUT erasing data.
+            # We accomplish no data loss by swapping. Note that the value
+            # old_to_perm[perm_to_old[perm_idx]] is guaranteed to be perm_idx,
+            # but we are reassigning it.
+
+            # We don't know these two values, but we must keep it in the map
+            # while swapping
+            old_idx_to_perm = old_to_perm[old_idx]
+            perm_idx_to_old = perm_to_old[perm_idx]
+
+            old_to_perm[old_idx], old_to_perm[perm_idx_to_old] = perm_idx, old_idx_to_perm,
+            perm_to_old[perm_idx], perm_to_old[old_idx_to_perm] = old_idx, perm_idx_to_old
 
     movements = []
-    for i, idx in enumerate(perm):
+    for i, idx in enumerate(old_to_perm):
         if i != idx:
-            # movements.append([idx, i])
             movements.append([i, idx])
+
     if len(movements) == 0:
         return np.array([[0, 0, 1, 1]], dtype=np.uint32)
 
@@ -49,7 +81,7 @@ ntiles = 2 ** (n - gate_size)
 #                     - 2^idx
 # returns: final state vector
 # TODO: orient matrix/vector to to optimize tensor unit?
-@nki.jit(mode='simulation')
+@nki.jit(mode="baremetal")
 def run_circuit(initial_state, gates):
     # for now, don't do any permutation
     # i.e. assume the unitary applies to the first 7 qubits
@@ -68,10 +100,8 @@ def run_circuit(initial_state, gates):
         U_tile = nl.load(gate[0])
         for tile_idx in nl.affine_range(ntiles): # allows for parallel computation
             offset = tile_idx * unitary_size
-            #state_tile = nl.load(state[offset:offset+unitary_size, 0])
 
             tile_idcs = nl.add(tile_idcs_base, offset, dtype=np.uint32)
-            # nl.device_print('tile_idcs', tile_idcs)
 
             y = nl.copy(tile_idcs) # permuted tile idcs
             for i in nl.sequential_range(gate[1].shape[0]):
@@ -84,35 +114,33 @@ def run_circuit(initial_state, gates):
                 y[:] = nl.bitwise_or(y, nl.left_shift(nl.bitwise_and(tile_idcs, ma), b - a))
                 y[:] = nl.bitwise_or(y, nl.right_shift(nl.bitwise_and(tile_idcs, ma), a - b))
 
-            # nl.device_print('y', y)
-
             state_tile = nl.load(state[y])
             new_state_tile = nl.matmul(U_tile, state_tile)
-            #nl.store(state[offset:offset+unitary_size, 0], value=new_state_tile)
             nl.store(state[y], value=new_state_tile)
 
     return state
 
+
 def kron(*args) -> np.ndarray:
-    mat = np.array([[1]], dtype=np.float16)
+    mat = np.array([[1]], dtype=DTYPE)
     for arg in args:
         mat = np.kron(mat, arg)
     return mat
 
-I = np.identity(2, dtype=np.float16)
-X = np.array([[0, 1], [1, 0]], dtype=np.float16)
-H = np.array([[1, 1], [1, -1]], dtype=np.float16) / np.sqrt(2)
+
+I = np.identity(2, dtype=DTYPE)
+X = np.array([[0, 1], [1, 0]], dtype=DTYPE)
+H = np.array([[1, 1], [1, -1]], dtype=DTYPE) / np.sqrt(2)
 CX = np.array([
     [1, 0, 0, 0],
     [0, 0, 0, 1],
     [0, 0, 1, 0],
     [0, 1, 0, 0]
-], dtype=np.float16)
+], dtype=DTYPE)
 
 def main():
-    initial_state = np.zeros((N, 1), dtype=np.float16)
+    initial_state = np.zeros((N, 1), dtype=DTYPE)
     initial_state[0, 0] = 1
-    # initial_state = np.array([list(range(N))], dtype=np.float16).T
 
     gates = [(CX, [1, 2])]
     gates = [(kron(I, X), [0, 2])]
@@ -129,6 +157,7 @@ def main():
     new_state = run_circuit(initial_state, gates)
     print(new_state)
 
+
 def main_cat():
     assert gate_size == 2
 
@@ -139,7 +168,7 @@ def main_cat():
     for i, gate in enumerate(gates):
         gates[i] = (gate[0], get_perm(n, gate[1]))
 
-    initial_state = np.zeros((N, 1), dtype=np.float16)
+    initial_state = np.zeros((N, 1), dtype=DTYPE)
     initial_state[0, 0] = 1
 
     new_state = run_circuit(initial_state, gates)
